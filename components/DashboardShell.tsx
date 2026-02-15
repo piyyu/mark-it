@@ -1,7 +1,7 @@
 'use client';
 
 import { createClient } from '@/lib/supabase/client';
-import { useEffect, useState, useMemo, useCallback } from 'react';
+import { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import type { Database } from '@/lib/database.types';
 import type { User } from '@supabase/supabase-js';
 import BookmarkCard from './BookmarkCard';
@@ -31,6 +31,9 @@ export default function DashboardShell({ initialBookmarks, initialFolders, user 
   const [newFolderName, setNewFolderName] = useState('');
   const [newFolderColor, setNewFolderColor] = useState('#FF1B6D');
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [editingFolderId, setEditingFolderId] = useState<string | null>(null);
+  const [editFolderName, setEditFolderName] = useState('');
+  const [editFolderColor, setEditFolderColor] = useState('');
   const [localFavorites, setLocalFavorites] = useState<Set<string>>(new Set());
 
   // Load local favorites on mount
@@ -45,7 +48,8 @@ export default function DashboardShell({ initialBookmarks, initialFolders, user 
     }
   }, []);
 
-  const supabase = createClient();
+  const supabaseRef = useRef(createClient());
+  const supabase = supabaseRef.current;
 
   // Real-time subscription for bookmarks
   useEffect(() => {
@@ -154,20 +158,92 @@ export default function DashboardShell({ initialBookmarks, initialFolders, user 
 
   const handleAddFolder = async () => {
     if (!newFolderName.trim()) return;
-    await supabase.from('folders').insert({
-      name: newFolderName.trim(),
-      color: newFolderColor,
+
+    const folderName = newFolderName.trim();
+    const folderColor = newFolderColor;
+
+    // Optimistic local folder so it appears immediately
+    const tempId = crypto.randomUUID();
+    const tempFolder: Folder = {
+      id: tempId,
+      user_id: user?.id || '',
+      name: folderName,
+      color: folderColor,
+      created_at: new Date().toISOString(),
+    };
+    setFolders((prev) => [...prev, tempFolder]);
+    setNewFolderName('');
+    setNewFolderColor('#FF1B6D');
+    setShowAddFolder(false);
+
+    // Insert into database
+    const response = await supabase.from('folders').insert({
+      name: folderName,
+      color: folderColor,
       user_id: user?.id,
     });
-    setNewFolderName('');
-    setShowAddFolder(false);
+
+    if (response.status !== 201) {
+      console.error('Failed to create folder:', response.status, response.error);
+      setFolders((prev) => prev.filter((f) => f.id !== tempId));
+    }
   };
 
+  const startEditingFolder = (folder: Folder) => {
+    setEditingFolderId(folder.id);
+    setEditFolderName(folder.name);
+    setEditFolderColor(folder.color);
+  };
+
+  const handleUpdateFolder = async () => {
+    if (!editingFolderId || !editFolderName.trim()) return;
+
+    const folderId = editingFolderId;
+    const newName = editFolderName.trim();
+    const newColor = editFolderColor;
+
+    // Optimistic update
+    setFolders((prev) =>
+      prev.map((f) => f.id === folderId ? { ...f, name: newName, color: newColor } : f)
+    );
+    setEditingFolderId(null);
+
+    const response = await supabase
+      .from('folders')
+      .update({ name: newName, color: newColor })
+      .eq('id', folderId);
+
+    if (response.status !== 204) {
+      console.error('Failed to update folder:', response.status, response.error);
+    }
+  };
+
+  const handleMoveBookmark = useCallback(async (bookmarkId: string, folderId: string | null) => {
+    // Optimistic update
+    setBookmarks((prev) =>
+      prev.map((b) => b.id === bookmarkId ? { ...b, folder_id: folderId } : b)
+    );
+
+    const response = await supabase
+      .from('bookmarks')
+      .update({ folder_id: folderId })
+      .eq('id', bookmarkId);
+
+    if (response.status !== 204) {
+      console.error('Failed to move bookmark:', response.status, response.error);
+    }
+  }, [supabase]);
+
   const handleDeleteFolder = async (id: string) => {
-    await supabase.from('folders').delete().eq('id', id);
+    // Optimistic removal
+    setFolders((prev) => prev.filter((f) => f.id !== id));
     if (activeFolderId === id) {
       setActiveNav('all');
       setActiveFolderId(null);
+    }
+    const { error } = await supabase.from('folders').delete().eq('id', id);
+    if (error) {
+      console.error('Error deleting folder:', error);
     }
   };
 
@@ -333,27 +409,74 @@ export default function DashboardShell({ initialBookmarks, initialFolders, user 
             <div className="space-y-0.5">
               {folders.map((folder) => (
                 <div key={folder.id} className="group relative">
-                  <button
-                    onClick={() => { setActiveNav('folder'); setActiveFolderId(folder.id); setSidebarOpen(false); }}
-                    className={`w-full h-9 rounded-lg flex items-center justify-between px-3 transition-all duration-200 ${activeNav === 'folder' && activeFolderId === folder.id
-                      ? 'bg-landing-primary/10 text-landing-primary'
-                      : 'text-landing-forest/55 dark:text-white/55 hover:bg-landing-forest/[0.04] dark:hover:bg-white/[0.04]'
-                      }`}
-                  >
-                    <span className="flex items-center gap-2.5 min-w-0">
-                      <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: folder.color }} />
-                      <span className="text-sm truncate">{folder.name}</span>
-                    </span>
-                    <span className="flex items-center gap-1">
-                      <span className="text-[10px] tabular-nums opacity-40">{folderCounts[folder.id] || 0}</span>
-                      <button
-                        onClick={(e) => { e.stopPropagation(); handleDeleteFolder(folder.id); }}
-                        className="opacity-0 group-hover:opacity-100 text-landing-forest/30 dark:text-white/30 hover:text-red-500 transition-all p-0.5"
-                      >
-                        <span className="material-icons text-sm">close</span>
-                      </button>
-                    </span>
-                  </button>
+                  {editingFolderId === folder.id ? (
+                    <div className="mx-0 p-2.5 bg-landing-forest/[0.03] dark:bg-white/[0.03] rounded-xl border border-landing-forest/5 dark:border-white/5">
+                      <input
+                        type="text"
+                        value={editFolderName}
+                        onChange={(e) => setEditFolderName(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === 'Enter') handleUpdateFolder(); if (e.key === 'Escape') setEditingFolderId(null); }}
+                        className="w-full bg-transparent text-sm outline-none placeholder:text-landing-forest/30 dark:placeholder:text-white/30 mb-2"
+                        autoFocus
+                      />
+                      <div className="flex items-center gap-1.5 mb-2">
+                        {folderColors.map((c) => (
+                          <button
+                            key={c}
+                            onClick={() => setEditFolderColor(c)}
+                            className={`w-4 h-4 rounded-full transition-all ${editFolderColor === c ? 'ring-2 ring-offset-1 ring-offset-landing-background-light dark:ring-offset-landing-background-dark scale-110' : 'hover:scale-110'}`}
+                            style={{ backgroundColor: c }}
+                          />
+                        ))}
+                      </div>
+                      <div className="flex gap-1.5">
+                        <button
+                          onClick={handleUpdateFolder}
+                          disabled={!editFolderName.trim()}
+                          className="flex-1 text-[10px] font-semibold text-white bg-landing-primary rounded-md py-1 hover:bg-landing-primary/90 disabled:opacity-40 transition-all"
+                        >
+                          Save
+                        </button>
+                        <button
+                          onClick={() => setEditingFolderId(null)}
+                          className="flex-1 text-[10px] font-semibold text-landing-forest/50 dark:text-white/40 border border-landing-forest/10 dark:border-white/10 rounded-md py-1 hover:bg-landing-forest/[0.03] transition-all"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => { setActiveNav('folder'); setActiveFolderId(folder.id); setSidebarOpen(false); }}
+                      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { setActiveNav('folder'); setActiveFolderId(folder.id); setSidebarOpen(false); } }}
+                      className={`w-full h-9 rounded-lg flex items-center justify-between px-3 transition-all duration-200 cursor-pointer ${activeNav === 'folder' && activeFolderId === folder.id
+                        ? 'bg-landing-primary/10 text-landing-primary'
+                        : 'text-landing-forest/55 dark:text-white/55 hover:bg-landing-forest/[0.04] dark:hover:bg-white/[0.04]'
+                        }`}
+                    >
+                      <span className="flex items-center gap-2.5 min-w-0">
+                        <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: folder.color }} />
+                        <span className="text-sm truncate">{folder.name}</span>
+                      </span>
+                      <span className="flex items-center gap-1">
+                        <span className="text-[10px] tabular-nums opacity-40">{folderCounts[folder.id] || 0}</span>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); startEditingFolder(folder); }}
+                          className="opacity-0 group-hover:opacity-100 text-landing-forest/30 dark:text-white/30 hover:text-landing-primary transition-all p-0.5"
+                        >
+                          <span className="material-icons text-sm">edit</span>
+                        </button>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); handleDeleteFolder(folder.id); }}
+                          className="opacity-0 group-hover:opacity-100 text-landing-forest/30 dark:text-white/30 hover:text-red-500 transition-all p-0.5"
+                        >
+                          <span className="material-icons text-sm">close</span>
+                        </button>
+                      </span>
+                    </div>
+                  )}
                 </div>
               ))}
               {folders.length === 0 && !showAddFolder && (
@@ -501,6 +624,7 @@ export default function DashboardShell({ initialBookmarks, initialFolders, user 
                     bookmark={bookmark}
                     onDelete={handleDelete}
                     onToggleFavorite={handleToggleFavorite}
+                    onMove={handleMoveBookmark}
                     folders={folders}
                   />
                 ))}

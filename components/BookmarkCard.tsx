@@ -1,5 +1,6 @@
 'use client';
 
+import { useState, useRef, useEffect } from 'react';
 import type { Database } from '@/lib/database.types';
 
 type Bookmark = Database['public']['Tables']['bookmarks']['Row'];
@@ -9,6 +10,7 @@ interface BookmarkCardProps {
   bookmark: Bookmark;
   onDelete: (id: string) => void;
   onToggleFavorite: (id: string, current: boolean) => void;
+  onMove: (bookmarkId: string, folderId: string | null) => void;
   folders: Folder[];
 }
 
@@ -36,10 +38,24 @@ function getDomain(url: string): string {
   }
 }
 
-export default function BookmarkCard({ bookmark, onDelete, onToggleFavorite, folders }: BookmarkCardProps) {
+export default function BookmarkCard({ bookmark, onDelete, onToggleFavorite, onMove, folders }: BookmarkCardProps) {
   const domain = getDomain(bookmark.url);
   const folder = folders.find((f) => f.id === bookmark.folder_id);
   const faviconUrl = `https://www.google.com/s2/favicons?domain=${domain}&sz=64`;
+  const [showMoveMenu, setShowMoveMenu] = useState(false);
+  const moveMenuRef = useRef<HTMLDivElement>(null);
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    if (!showMoveMenu) return;
+    const handleClick = (e: MouseEvent) => {
+      if (moveMenuRef.current && !moveMenuRef.current.contains(e.target as Node)) {
+        setShowMoveMenu(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, [showMoveMenu]);
 
   return (
     <div className="group bg-white dark:bg-[#111] border border-landing-forest/[0.06] dark:border-white/[0.06] rounded-xl overflow-hidden hover:shadow-xl hover:shadow-landing-forest/[0.06] hover:-translate-y-0.5 hover:border-landing-forest/10 dark:hover:border-white/10 transition-all duration-300 flex flex-col">
@@ -67,6 +83,37 @@ export default function BookmarkCard({ bookmark, onDelete, onToggleFavorite, fol
             >
               <span className="material-icons text-base">{bookmark.is_favorite ? 'star' : 'star_border'}</span>
             </button>
+            {/* Move to folder */}
+            <div className="relative" ref={moveMenuRef}>
+              <button
+                onClick={(e) => { e.stopPropagation(); setShowMoveMenu(!showMoveMenu); }}
+                className="p-1 rounded-md text-landing-forest/30 dark:text-white/30 hover:text-landing-primary transition-colors"
+                title="Move to folder"
+              >
+                <span className="material-icons text-base">drive_file_move_outline</span>
+              </button>
+              {showMoveMenu && (
+                <div className="absolute right-0 top-full mt-1 w-44 bg-white dark:bg-[#1a1a1a] border border-landing-forest/10 dark:border-white/10 rounded-xl shadow-xl z-50 py-1.5 animate-in fade-in slide-in-from-top-1">
+                  <button
+                    onClick={() => { onMove(bookmark.id, null); setShowMoveMenu(false); }}
+                    className={`w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 transition-colors ${!bookmark.folder_id ? 'text-landing-primary font-semibold bg-landing-primary/5' : 'text-landing-forest/60 dark:text-white/50 hover:bg-landing-forest/[0.04] dark:hover:bg-white/[0.04]'}`}
+                  >
+                    <span className="material-icons text-sm">inbox</span>
+                    Unfiled
+                  </button>
+                  {folders.map((f) => (
+                    <button
+                      key={f.id}
+                      onClick={() => { onMove(bookmark.id, f.id); setShowMoveMenu(false); }}
+                      className={`w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 transition-colors ${bookmark.folder_id === f.id ? 'text-landing-primary font-semibold bg-landing-primary/5' : 'text-landing-forest/60 dark:text-white/50 hover:bg-landing-forest/[0.04] dark:hover:bg-white/[0.04]'}`}
+                    >
+                      <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: f.color }} />
+                      {f.name}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
             <a
               href={bookmark.url}
               target="_blank"
