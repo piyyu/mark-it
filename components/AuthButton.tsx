@@ -3,7 +3,6 @@
 import { createClient } from '@/lib/supabase/client';
 import { ComponentProps } from 'react';
 import { cn } from '@/lib/utils';
-import { Chrome } from 'lucide-react'; // Simulating Google icon with Chrome for now as Lucide doesn't have brand icons, or use SVG.
 
 export default function AuthButton({ className, text = "Sign in with Google", ...props }: ComponentProps<'button'> & { text?: string }) {
   const supabase = createClient();

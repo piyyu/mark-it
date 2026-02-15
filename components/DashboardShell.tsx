@@ -87,7 +87,19 @@ export default function DashboardShell({ initialBookmarks, initialFolders, user 
         { event: '*', schema: 'public', table: 'folders' },
         (payload) => {
           if (payload.eventType === 'INSERT') {
-            setFolders((prev) => [...prev, payload.new as Folder]);
+            setFolders((prev) => {
+              // Skip if already exists (dedup against real-time echo)
+              if (prev.some(f => f.id === (payload.new as Folder).id)) return prev;
+              // Replace the optimistic temp folder (matched by name+color) with the real one
+              const newFolder = payload.new as Folder;
+              const tempIndex = prev.findIndex(f => f.name === newFolder.name && f.color === newFolder.color && f.id !== newFolder.id);
+              if (tempIndex !== -1) {
+                const updated = [...prev];
+                updated[tempIndex] = newFolder;
+                return updated;
+              }
+              return [...prev, newFolder];
+            });
           } else if (payload.eventType === 'DELETE') {
             setFolders((prev) => prev.filter((f) => f.id !== payload.old.id));
           } else if (payload.eventType === 'UPDATE') {
